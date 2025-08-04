@@ -6,6 +6,8 @@ import { eq } from 'drizzle-orm';
 
 const router = express.Router();
 
+
+
 // Simple playlist extraction from Spotify URL
 function extractPlaylistId(url: string): string | null {
   const match = url.match(/playlist\/([a-zA-Z0-9]+)/);
@@ -85,9 +87,9 @@ async function fetchPlaylistData(playlistId: string) {
 }
 
 // Main conversion endpoint
-router.post('/api/simple-convert', async (req, res) => {
+router.post('/playlists/simple', async (req, res) => {
   try {
-    const { url, maxTracks, startFromTrack = 1 } = req.body;
+    const { url, maxTracks, startFromTrack = 1, previewOnly = false } = req.body;
     
     if (!url) {
       return res.status(400).json({ error: 'Playlist URL is required' });
@@ -177,6 +179,22 @@ router.post('/api/simple-convert', async (req, res) => {
     console.log('[Simple API] Fetching fresh data from Spotify...');
     const playlistData = await fetchPlaylistData(playlistId);
     
+    // If preview only, return the playlist data without conversion
+    if (previewOnly) {
+      console.log(`[Simple API] Preview mode: returning ${playlistData.tracks.length} tracks`);
+      return res.json({
+        success: true,
+        playlist: {
+          id: playlistData.id,
+          name: playlistData.name,
+          description: playlistData.description,
+          totalTracks: playlistData.totalTracks,
+          tracks: playlistData.tracks,
+          stats: { total: playlistData.totalTracks, found: 0, successRate: 0 }
+        }
+      });
+    }
+    
     // 3. Convert tracks to YouTube videos with caching
     const tracksToProcess = maxTracks || playlistData.tracks.length;
     console.log(`[Simple API] Converting ${tracksToProcess} tracks...`);
@@ -189,7 +207,7 @@ router.post('/api/simple-convert', async (req, res) => {
     
     // 4. Create YouTube playlist URL and instructions
     const foundTracks = conversionResult.results.filter(track => track.status === 'found');
-    const videoIds = foundTracks.map(track => track.youtubeVideoId).filter(Boolean);
+    const videoIds = foundTracks.map(track => track.youtubeVideoId).filter((id): id is string => Boolean(id));
     const youtubePlaylistUrl = simpleConverter.createYouTubePlaylistUrl(videoIds);
     const playlistInstructions = simpleConverter.generatePlaylistInstructions(videoIds);
     

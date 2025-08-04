@@ -45,7 +45,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  app.use('/', simpleRoutes);
+  app.use('/api', simpleRoutes);
   app.use('/api', routes);
   app.use('/api', backgroundRoutes);
   app.use('/api', fastRoutes);
