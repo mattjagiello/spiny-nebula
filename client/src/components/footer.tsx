@@ -24,13 +24,17 @@ export default function Footer() {
             <ul className="text-spotify-light-gray text-sm space-y-2">
               <li>• Built with TypeScript, React, and Node.js</li>
               <li>• No personal data stored or transmitted</li>
-              <li>• Source code available on GitHub for transparency</li>
+              <li>• <a href="https://github.com/mattjagiello/spiny-nebula" target="_blank" rel="noopener noreferrer" className="text-pink-400 hover:text-pink-300 underline">Source code available on GitHub</a> for transparency</li>
               <li>• Uses only public APIs - designed for privacy</li>
             </ul>
           </div>
         </div>
         <div className="border-t border-spotify-gray mt-8 pt-8 text-center text-spotify-light-gray text-sm">
-          <p>&copy; 2025 Spiny Nebula. Open source software - not affiliated with Spotify or YouTube.</p>
+          <p>&copy; 2025 <span 
+            className="cursor-pointer hover:text-pink-400 transition-colors duration-200" 
+            onClick={() => window.open('https://www.youtube.com/shorts/iHy2nya_L6M', '_blank')}
+            title="🎵"
+          >Spiny Nebula</span>. Open source software - not affiliated with Spotify or YouTube.</p>
         </div>
       </div>
     </footer>

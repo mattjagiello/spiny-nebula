@@ -46,22 +46,23 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
   // Preview playlist without conversion
   const previewPlaylist = useMutation({
     mutationFn: async (url: string) => {
-      const response = await fetch('/api/preview-playlist', {
+      const response = await fetch('/api/playlists/simple', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url, previewOnly: true })
       });
       if (!response.ok) throw new Error('Failed to load playlist');
       return response.json();
     },
     onSuccess: (data) => {
+      console.log('Preview data received:', data);
       setPlaylist({
-        id: data.id,
-        name: data.name,
-        description: data.description,
-        totalTracks: data.totalTracks,
-        tracks: data.tracks || [],
-        stats: { total: data.totalTracks, found: 0, successRate: 0 }
+        id: data.playlist?.id || data.id,
+        name: data.playlist?.name || data.name,
+        description: data.playlist?.description || data.description,
+        totalTracks: data.playlist?.totalTracks || data.totalTracks,
+        tracks: data.playlist?.tracks || data.tracks || [],
+        stats: { total: data.playlist?.totalTracks || data.totalTracks, found: 0, successRate: 0 }
       });
     },
     onError: (error) => {
@@ -83,17 +84,28 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
         const startTrack = (pageNum - 1) * 50 + 1;
         const maxTracks = 50;
         
-        const response = await fetch('/api/simple-convert', {
+        const response = await fetch('/api/playlists/simple', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             url: spotifyUrl, 
             maxTracks,
-            startFromTrack: startTrack
+            startFromTrack: startTrack,
+            previewOnly: false
           })
         });
         
-        if (!response.ok) throw new Error(`Failed to convert page ${pageNum}`);
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to convert page ${pageNum}: ${errorText}`);
+        }
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await response.text();
+          throw new Error(`Expected JSON response but got: ${text.slice(0, 100)}...`);
+        }
+        
         const result = await response.json();
         results.push({ pageNum, ...result });
       }
@@ -355,23 +367,28 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
                     </p>
                   </div>
                   
-                  {isExpanded && pageTracks.length > 0 && (
+                  {isExpanded && (
                     <div className="ml-4 p-3 bg-gray-50 dark:bg-spotify-darker rounded-lg border border-gray-200 dark:border-spotify-gray">
-                      <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2">
-                        Songs in Page {pageNum}:
+                      <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3">
+                        Songs in Page {pageNum} ({pageTracks.length} songs):
                       </h4>
-                      <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {pageTracks.length === 0 ? (
+                        <p className="text-xs text-gray-500 dark:text-spotify-light-gray italic">
+                          Loading tracks for this page...
+                        </p>
+                      ) : null}
+                      <div className="space-y-2 max-h-60 overflow-y-auto">
                         {pageTracks.map((track, index) => (
-                          <div key={startSong + index} className="flex items-center space-x-2 py-1">
-                            <span className="text-xs text-gray-500 dark:text-spotify-light-gray w-8">
+                          <div key={startSong + index} className="flex items-start space-x-2 py-2 px-2 bg-white dark:bg-spotify-dark rounded border">
+                            <span className="text-xs text-gray-500 dark:text-spotify-light-gray w-8 mt-1 flex-shrink-0">
                               {startSong + index}.
                             </span>
-                            <Music className="w-3 h-3 text-pink-500 flex-shrink-0" />
+                            <Music className="w-3 h-3 text-pink-500 flex-shrink-0 mt-1" />
                             <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium text-gray-900 dark:text-white truncate">
+                              <p className="text-xs font-medium text-gray-900 dark:text-white leading-relaxed break-words">
                                 {track.name}
                               </p>
-                              <p className="text-xs text-gray-600 dark:text-spotify-light-gray truncate">
+                              <p className="text-xs text-gray-600 dark:text-spotify-light-gray leading-relaxed break-words">
                                 {track.artist}
                               </p>
                             </div>
