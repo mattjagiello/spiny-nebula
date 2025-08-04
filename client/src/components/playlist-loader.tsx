@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Music, Play, Download, ChevronRight, ChevronDown, Eye, Loader2 } from "lucide-react";
+import { Music, Play, Download, ChevronRight, ChevronDown, Eye, Loader2, CheckCircle, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -42,6 +42,12 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
   const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set());
   const [isConverting, setIsConverting] = useState(false);
   const [expandedPage, setExpandedPage] = useState<number | null>(null);
+  const [conversionProgress, setConversionProgress] = useState<{
+    currentPage: number;
+    totalPages: number;
+    results: Array<{pageNum: number; found: number; total: number; playlistUrl?: string}>;
+  } | null>(null);
+  const [completedResults, setCompletedResults] = useState<Array<{pageNum: number; found: number; total: number; playlistUrl?: string}> | null>(null);
 
   // Preview playlist without conversion
   const previewPlaylist = useMutation({
@@ -78,69 +84,104 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
   const convertPages = useMutation({
     mutationFn: async (pages: number[]) => {
       setIsConverting(true);
+      setConversionProgress({ currentPage: 0, totalPages: pages.length, results: [] });
       const results = [];
       
-      for (const pageNum of pages) {
+      for (let i = 0; i < pages.length; i++) {
+        const pageNum = pages[i];
         const startTrack = (pageNum - 1) * 50 + 1;
         const maxTracks = 50;
         
-        const response = await fetch('/api/playlists/simple', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            url: spotifyUrl, 
-            maxTracks,
-            startFromTrack: startTrack,
-            previewOnly: false
-          })
-        });
+        // Update progress
+        setConversionProgress(prev => prev ? { ...prev, currentPage: i + 1 } : null);
         
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to convert page ${pageNum}: ${errorText}`);
+        try {
+          const response = await fetch('/api/playlists/simple', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              url: spotifyUrl, 
+              maxTracks,
+              startFromTrack: startTrack,
+              previewOnly: false
+            })
+          });
+          
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to convert page ${pageNum}: ${errorText}`);
+          }
+          
+          const contentType = response.headers.get('content-type');
+          if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            throw new Error(`Expected JSON response but got: ${text.slice(0, 100)}...`);
+          }
+          
+          const result = await response.json();
+          const foundTracks = result.playlist.tracks.filter((t: Track) => t.status === 'found');
+          const videoIds = foundTracks.map((t: Track) => t.youtubeVideoId).filter(Boolean);
+          const playlistUrl = videoIds.length > 0 ? `https://www.youtube.com/watch_videos?video_ids=${videoIds.join(',')}` : undefined;
+          
+          const pageResult = {
+            pageNum,
+            found: foundTracks.length,
+            total: result.playlist.tracks.length,
+            playlistUrl,
+            ...result
+          };
+          
+          results.push(pageResult);
+          
+          // Update progress with this page's results
+          setConversionProgress(prev => prev ? {
+            ...prev,
+            results: [...prev.results, { pageNum, found: foundTracks.length, total: result.playlist.tracks.length, playlistUrl }]
+          } : null);
+          
+        } catch (error) {
+          console.error(`Error converting page ${pageNum}:`, error);
+          // Continue with next page instead of failing completely
+          results.push({
+            pageNum,
+            found: 0,
+            total: 0,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            playlist: { tracks: [] }
+          });
         }
-        
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-          const text = await response.text();
-          throw new Error(`Expected JSON response but got: ${text.slice(0, 100)}...`);
-        }
-        
-        const result = await response.json();
-        results.push({ pageNum, ...result });
       }
       
       return results;
     },
     onSuccess: (results) => {
       setIsConverting(false);
+      setConversionProgress(null);
       
-      // Create YouTube playlists for each page
-      results.forEach((result, index) => {
-        const foundTracks = result.playlist.tracks.filter((t: Track) => t.status === 'found');
-        if (foundTracks.length > 0) {
-          const videoIds = foundTracks.map((t: Track) => t.youtubeVideoId).filter(Boolean);
-          const playlistUrl = `https://www.youtube.com/watch_videos?video_ids=${videoIds.join(',')}`;
-          
-          toast({
-            title: `Page ${result.pageNum} converted!`,
-            description: `${foundTracks.length} songs found. Click to open playlist.`,
-            action: (
-              <Button
-                size="sm"
-                onClick={() => window.open(playlistUrl, '_blank')}
-                className="bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white"
-              >
-                <Play className="w-4 h-4 mr-1" />
-                Open
-              </Button>
-            )
-          });
-        }
+      // Store completed results for display
+      const completedResults = results.map(r => ({
+        pageNum: r.pageNum,
+        found: r.found || 0,
+        total: r.total || 0,
+        playlistUrl: r.playlistUrl
+      }));
+      setCompletedResults(completedResults);
+      
+      // Show final summary
+      const totalFound = results.reduce((sum, r) => sum + (r.found || 0), 0);
+      const totalTracks = results.reduce((sum, r) => sum + (r.total || 0), 0);
+      const successRate = totalTracks > 0 ? Math.round((totalFound / totalTracks) * 100) : 0;
+      
+      toast({
+        title: "Conversion Complete!",
+        description: `Converted ${results.length} pages • ${totalFound}/${totalTracks} songs found (${successRate}%)`,
+        duration: 8000,
       });
     },
     onError: (error) => {
       setIsConverting(false);
+      setConversionProgress(null);
+      setCompletedResults(null);
       toast({
         title: "Conversion failed",
         description: error.message,
@@ -157,6 +198,13 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
       });
       return;
     }
+    
+    // Clear any existing state and cache
+    setPlaylist(null);
+    setCompletedResults(null);
+    setSelectedPages(new Set());
+    queryClient.invalidateQueries();
+    
     previewPlaylist.mutate(spotifyUrl);
   };
 
@@ -403,6 +451,118 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
           </div>
         </div>
 
+        {/* Conversion Progress */}
+        {conversionProgress && (
+          <div className="bg-gradient-to-r from-pink-500/5 to-purple-500/5 dark:from-pink-500/10 dark:to-purple-500/10 border border-pink-200 dark:border-pink-800 rounded-lg p-4">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-pink-600 dark:text-pink-400">
+                  Converting Pages ({conversionProgress.currentPage}/{conversionProgress.totalPages})
+                </h4>
+                <div className="text-xs text-gray-600 dark:text-gray-400">
+                  {Math.round((conversionProgress.currentPage / conversionProgress.totalPages) * 100)}%
+                </div>
+              </div>
+              
+              {/* Progress Bar */}
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                <div 
+                  className="bg-gradient-to-r from-pink-500 to-purple-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(conversionProgress.currentPage / conversionProgress.totalPages) * 100}%` }}
+                />
+              </div>
+              
+              {/* Results */}
+              {conversionProgress.results.length > 0 && (
+                <div className="space-y-2">
+                  <h5 className="text-xs font-medium text-gray-700 dark:text-gray-300">Completed Pages:</h5>
+                  <div className="grid gap-2 max-h-32 overflow-y-auto">
+                    {conversionProgress.results.map(result => (
+                      <div key={result.pageNum} className="flex items-center justify-between bg-white dark:bg-spotify-dark rounded p-2 border">
+                        <div className="flex items-center space-x-2">
+                          <CheckCircle className="w-4 h-4 text-green-500" />
+                          <span className="text-xs font-medium">Page {result.pageNum}</span>
+                          <span className="text-xs text-gray-600 dark:text-gray-400">
+                            {result.found}/{result.total} found
+                          </span>
+                        </div>
+                        {result.playlistUrl && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => window.open(result.playlistUrl, '_blank')}
+                            className="h-6 px-2 text-xs border-pink-300 text-pink-600 hover:bg-pink-50"
+                          >
+                            <ExternalLink className="w-3 h-3 mr-1" />
+                            Open
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Completed Results */}
+        {completedResults && completedResults.length > 0 && (
+          <div className="bg-gradient-to-r from-green-500/5 to-blue-500/5 dark:from-green-500/10 dark:to-blue-500/10 border border-green-200 dark:border-green-800 rounded-lg p-4">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-green-600 dark:text-green-400">
+                  🎉 Conversion Complete! Your YouTube Playlists:
+                </h4>
+                <div className="text-xs text-gray-600 dark:text-gray-400">
+                  {completedResults.reduce((sum, r) => sum + r.found, 0)} / {completedResults.reduce((sum, r) => sum + r.total, 0)} songs found
+                </div>
+              </div>
+              
+              <div className="grid gap-3">
+                {completedResults.map(result => (
+                  <div key={result.pageNum} className="flex items-center justify-between bg-white dark:bg-spotify-dark rounded-lg p-4 border border-green-200 dark:border-green-700">
+                    <div className="flex items-center space-x-3">
+                      <div className="flex items-center justify-center w-8 h-8 bg-green-100 dark:bg-green-900 rounded-full">
+                        <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />
+                      </div>
+                      <div>
+                        <h5 className="font-medium text-gray-900 dark:text-white">
+                          Page {result.pageNum} Playlist
+                        </h5>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {result.found}/{result.total} songs found ({Math.round((result.found / result.total) * 100)}% success)
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {result.playlistUrl ? (
+                      <Button
+                        onClick={() => window.open(result.playlistUrl, '_blank')}
+                        className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-medium"
+                      >
+                        <Play className="w-4 h-4 mr-2" />
+                        Open YouTube Playlist
+                      </Button>
+                    ) : (
+                      <div className="text-sm text-gray-500 dark:text-gray-400 italic">
+                        No songs found for this page
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg p-3">
+                <p className="text-sm text-blue-700 dark:text-blue-300">
+                  💡 <strong>Tip:</strong> Each playlist opens directly in YouTube with all found songs ready to play. 
+                  You can save these playlists to your YouTube account by clicking "Save" when they open.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-3">
           <Button
@@ -424,7 +584,11 @@ export default function PlaylistLoader({ onBack }: PlaylistLoaderProps) {
           </Button>
           
           <Button
-            onClick={() => setPlaylist(null)}
+            onClick={() => {
+              setPlaylist(null);
+              setCompletedResults(null);
+              setSelectedPages(new Set());
+            }}
             variant="outline"
             className="border-gray-300 dark:border-spotify-gray text-gray-700 dark:text-white"
           >

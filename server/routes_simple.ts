@@ -19,6 +19,12 @@ async function getSpotifyToken(): Promise<string> {
   const clientId = process.env.SPOTIFY_CLIENT_ID || 'd9c490d71a824bcd8c258d4ef667d2cb';
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET || 'b14fa68c2f40494195d4adfcbee42364';
   
+  if (!clientId || !clientSecret) {
+    throw new Error('Missing Spotify credentials - SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET required');
+  }
+  
+  console.log('[Spotify Auth] Requesting access token...');
+  
   const response = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
     headers: {
@@ -29,10 +35,13 @@ async function getSpotifyToken(): Promise<string> {
   });
   
   if (!response.ok) {
-    throw new Error(`Spotify auth failed: ${response.status}`);
+    const errorText = await response.text();
+    console.error('[Spotify Auth] Failed:', response.status, errorText);
+    throw new Error(`Spotify auth failed: ${response.status} - ${errorText}`);
   }
   
   const data = await response.json();
+  console.log('[Spotify Auth] Token obtained successfully');
   return data.access_token;
 }
 
@@ -102,78 +111,8 @@ router.post('/playlists/simple', async (req, res) => {
     
     console.log(`[Simple API] Starting conversion for playlist ${playlistId}`);
     
-    // 1. Check cache first
-    console.log('[Cache] Checking for cached results...');
-    try {
-      const [cachedPlaylist] = await db
-        .select()
-        .from(playlists)
-        .where(eq(playlists.spotifyId, playlistId))
-        .limit(1);
-        
-      if (cachedPlaylist && (!maxTracks || cachedPlaylist.totalTracks >= maxTracks)) {
-        console.log(`[Cache] Found cached results: ${cachedPlaylist.totalTracks} tracks`);
-        
-        const cachedTracks = await db
-          .select()
-          .from(tracks)
-          .where(eq(tracks.playlistId, cachedPlaylist.id))
-          .offset(startFromTrack - 1)
-          .limit(maxTracks || cachedPlaylist.totalTracks);
-          
-        // Convert cached tracks to response format
-        const cachedResults = cachedTracks.map(track => ({
-          name: track.name,
-          artist: track.artist,
-          youtubeVideoId: track.youtubeVideoId,
-          youtubeUrl: track.youtubeVideoId ? `https://www.youtube.com/watch?v=${track.youtubeVideoId}` : null,
-          youtubeTitle: track.youtubeVideoTitle,
-          status: track.found ? 'found' : 'failed'
-        }));
-        
-        const foundTracks = cachedResults.filter(track => track.youtubeVideoId);
-        const videoIds = foundTracks.map(t => t.youtubeVideoId).filter(Boolean);
-        const youtubePlaylistUrl = videoIds.length > 0 
-          ? (videoIds.length <= 50 
-             ? `https://www.youtube.com/watch_videos?video_ids=${videoIds.join(',')}` 
-             : `https://www.youtube.com/watch?v=${videoIds[0]}&list=PLrAl1VWM-FgCcD4WrDvZNXxMvVoqQHq0w`)
-          : null;
-        const playlistInstructions = videoIds.length <= 50 
-          ? 'Click the button above to open your YouTube playlist!'
-          : `Your playlist has ${videoIds.length} videos. YouTube URLs are limited to 50 videos, so you'll need to create the playlist manually using the video links below.`;
-        
-        const successRate = Math.round((foundTracks.length / cachedResults.length) * 100);
-        
-        console.log(`[Cache] Returning cached results: ${foundTracks.length}/${cachedResults.length} (${successRate}%)`);
-        
-        return res.json({
-          success: true,
-          fromCache: true,
-          playlist: {
-            id: playlistId,
-            name: cachedPlaylist.name,
-            description: cachedPlaylist.description,
-            totalTracks: cachedPlaylist.totalTracks,
-            convertedTracks: foundTracks.length,
-            successRate,
-            youtubePlaylistUrl,
-            playlistInstructions,
-            tracks: cachedResults,
-            originalUrl: url,
-            stats: {
-              total: cachedResults.length,
-              found: foundTracks.length,
-              failed: cachedResults.length - foundTracks.length,
-              successRate,
-              target: Math.ceil(cachedResults.length * 0.9),
-              targetMet: foundTracks.length >= Math.ceil(cachedResults.length * 0.9)
-            }
-          }
-        });
-      }
-    } catch (error) {
-      console.log(`[Cache] Error checking cache: ${error}`);
-    }
+    // Caching disabled - always fetch fresh data for reliable results
+    // (This ensures we always get complete playlists without partial cache issues)
 
     // 2. Fetch playlist from Spotify
     console.log('[Simple API] Fetching fresh data from Spotify...');
@@ -195,12 +134,15 @@ router.post('/playlists/simple', async (req, res) => {
       });
     }
     
-    // 3. Convert tracks to YouTube videos with caching
-    const tracksToProcess = maxTracks || playlistData.tracks.length;
-    console.log(`[Simple API] Converting ${tracksToProcess} tracks...`);
+    // 3. Slice tracks for the requested page range
+    const startIndex = startFromTrack - 1;
+    const endIndex = maxTracks ? startIndex + maxTracks : playlistData.tracks.length;
+    const tracksToConvert = playlistData.tracks.slice(startIndex, endIndex);
+    
+    console.log(`[Simple API] Converting tracks ${startFromTrack}-${startIndex + tracksToConvert.length} (${tracksToConvert.length} total)...`);
     const conversionResult = await simpleConverter.convertPlaylist(
-      playlistData.tracks, 
-      tracksToProcess, 
+      tracksToConvert, 
+      tracksToConvert.length, 
       playlistId, 
       playlistData
     );
